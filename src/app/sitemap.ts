@@ -22,8 +22,6 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     url: `${site.url}${path || "/"}`,
   }));
 
-  if (!process.env.MONGODB_URI) return entries;
-
   try {
     const { listCategories } = await import("@/services/categories");
     const { listProducts } = await import("@/services/products");

@@ -2,12 +2,13 @@ import { BlogPost } from "@/models/BlogPost";
 import { postSchema } from "@/lib/validators";
 import type { PostDTO, ServiceResult } from "@/types";
 import { mapPost } from "@/services/mappers";
+import { fallbackPost, fallbackPosts, orCatalogue } from "@/services/catalogue-fallback";
 import { badId, db, invalid, isDuplicateKey, issuesFrom, notFound, paginate, uniqueSlug } from "@/services/helpers";
 
 export async function listPosts(options?: { publishedOnly?: boolean; page?: number; limit?: number }) {
   const page = options?.page && options.page > 0 ? options.page : 1;
   const pageSize = options?.limit && options.limit > 0 ? Math.min(options.limit, 48) : 12;
-  return db(async () => {
+  const read = () => db(async () => {
     const filter = options?.publishedOnly === false ? {} : { published: true };
     const [docs, total] = await Promise.all([
       BlogPost.find(filter)
@@ -19,13 +20,19 @@ export async function listPosts(options?: { publishedOnly?: boolean; page?: numb
     ]);
     return paginate(docs.map((doc) => mapPost(doc)), page, pageSize, total);
   });
+  if (options?.publishedOnly === false) return read();
+  return orCatalogue(read, () => fallbackPosts(options));
 }
 
 export async function getPostBySlug(slug: string, includeDrafts = false) {
-  return db(async () => {
-    const doc = await BlogPost.findOne(includeDrafts ? { slug } : { slug, published: true }).lean();
-    return doc ? mapPost(doc) : null;
-  });
+  return orCatalogue(
+    () =>
+      db(async () => {
+        const doc = await BlogPost.findOne(includeDrafts ? { slug } : { slug, published: true }).lean();
+        return doc ? mapPost(doc) : null;
+      }),
+    () => (includeDrafts ? fallbackPost(slug) : fallbackPost(slug)),
+  );
 }
 
 export async function getPostById(id: string) {

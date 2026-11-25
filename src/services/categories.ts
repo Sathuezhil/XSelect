@@ -2,11 +2,12 @@ import { Category } from "@/models/Category";
 import { categorySchema, type CategoryInput } from "@/lib/validators";
 import type { CategoryDTO, ServiceResult } from "@/types";
 import { mapCategory } from "@/services/mappers";
+import { fallbackCategories, fallbackCategory, orCatalogue } from "@/services/catalogue-fallback";
 import { badId, db, invalid, isDuplicateKey, issuesFrom, notFound, uniqueSlug } from "@/services/helpers";
 import { Product } from "@/models/Product";
 
 export async function listCategories(options?: { includeInactive?: boolean; withCounts?: boolean }) {
-  return db(async () => {
+  const read = () => db(async () => {
     const filter = options?.includeInactive ? {} : { active: true };
     const docs = await Category.find(filter).sort({ sortOrder: 1, name: 1 }).lean();
     if (!options?.withCounts) return docs.map((doc) => mapCategory(doc));
@@ -17,13 +18,19 @@ export async function listCategories(options?: { includeInactive?: boolean; with
     const countMap = new Map(counts.map((row) => [String(row._id), row.count]));
     return docs.map((doc) => mapCategory(doc, countMap.get(String(doc._id)) ?? 0));
   });
+  if (options?.includeInactive) return read();
+  return orCatalogue(read, () => fallbackCategories(Boolean(options?.withCounts)));
 }
 
 export async function getCategoryBySlug(slug: string, includeInactive = false) {
-  return db(async () => {
-    const doc = await Category.findOne({ slug, ...(includeInactive ? {} : { active: true }) }).lean();
-    return doc ? mapCategory(doc) : null;
-  });
+  return orCatalogue(
+    () =>
+      db(async () => {
+        const doc = await Category.findOne({ slug, ...(includeInactive ? {} : { active: true }) }).lean();
+        return doc ? mapCategory(doc) : null;
+      }),
+    () => fallbackCategory(slug),
+  );
 }
 
 export async function getCategoryById(id: string) {

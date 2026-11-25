@@ -17,10 +17,17 @@ export class DatabaseUnavailableError extends Error {
   }
 }
 
+function isLocalDatabase(uri: string) {
+  return /^mongodb:\/\/(?:[^@/]+@)?(127\.0\.0\.1|localhost)(?::\d+)?(?:\/|$)/i.test(uri);
+}
+
 export async function connectDB() {
   const uri = process.env.MONGODB_URI;
   if (!uri) {
     throw new DatabaseUnavailableError("MONGODB_URI is not configured.");
+  }
+  if (process.env.NETLIFY && isLocalDatabase(uri)) {
+    throw new DatabaseUnavailableError("Netlify cannot reach a database on this computer.");
   }
   if (cache.conn) return cache.conn;
   if (!cache.promise) {

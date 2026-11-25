@@ -1,9 +1,11 @@
+import { DatabaseUnavailableError } from "@/lib/mongodb";
 import { Product } from "@/models/Product";
 import { Category } from "@/models/Category";
 import { productSchema } from "@/lib/validators";
 import { sanitizeAmazonUrl, withAssociateTag } from "@/lib/amazon";
 import type { ProductDTO, ProductListQuery, ServiceResult } from "@/types";
 import { mapProduct } from "@/services/mappers";
+import { fallbackAffiliateUrl, fallbackBrands, fallbackProduct, fallbackProducts, fallbackRelated, orCatalogue } from "@/services/catalogue-fallback";
 import { badId, db, emptyPage, invalid, isDuplicateKey, issuesFrom, notFound, paginate, uniqueSlug } from "@/services/helpers";
 import { escapeRegex } from "@/lib/utils";
 
@@ -17,7 +19,7 @@ function sortFor(sort: ProductListQuery["sort"]): Record<string, 1 | -1> {
 export async function listProducts(query: ProductListQuery = {}) {
   const page = query.page && query.page > 0 ? query.page : 1;
   const pageSize = query.limit && query.limit > 0 ? Math.min(query.limit, 48) : 12;
-  return db(async () => {
+  const read = () => db(async () => {
     const filter: Record<string, unknown> = {};
     if (!query.includeInactive) filter.active = true;
     if (query.featured) filter.featured = true;
@@ -58,20 +60,30 @@ export async function listProducts(query: ProductListQuery = {}) {
 
     return paginate(docs.map((doc) => mapProduct(doc)), page, pageSize, total);
   });
+  if (query.includeInactive) return read();
+  return orCatalogue(read, () => fallbackProducts(query));
 }
 
 export async function listBrands() {
-  return db(async () => {
-    const brands = await Product.distinct("brand", { active: true });
-    return brands.filter((brand): brand is string => typeof brand === "string" && brand.length > 0).sort((a, b) => a.localeCompare(b));
-  });
+  return orCatalogue(
+    () =>
+      db(async () => {
+        const brands = await Product.distinct("brand", { active: true });
+        return brands.filter((brand): brand is string => typeof brand === "string" && brand.length > 0).sort((a, b) => a.localeCompare(b));
+      }),
+    () => fallbackBrands(),
+  );
 }
 
 export async function getProductBySlug(slug: string) {
-  return db(async () => {
-    const doc = await Product.findOne({ slug, active: true }).populate("category", "name slug").lean();
-    return doc ? mapProduct(doc) : null;
-  });
+  return orCatalogue(
+    () =>
+      db(async () => {
+        const doc = await Product.findOne({ slug, active: true }).populate("category", "name slug").lean();
+        return doc ? mapProduct(doc) : null;
+      }),
+    () => fallbackProduct(slug),
+  );
 }
 
 export async function getProductById(id: string) {
@@ -83,7 +95,7 @@ export async function getProductById(id: string) {
 }
 
 export async function relatedProducts(product: ProductDTO, limit = 4) {
-  return db(async () => {
+  return orCatalogue(() => db(async () => {
     const docs = await Product.find({
       active: true,
       slug: { $ne: product.slug },
@@ -94,7 +106,7 @@ export async function relatedProducts(product: ProductDTO, limit = 4) {
       .populate("category", "name slug")
       .lean();
     return docs.map((doc) => mapProduct(doc));
-  });
+  }), () => fallbackRelated(product.slug, limit));
 }
 
 function cleanLinks(input: { amazonUrl: string; affiliateUrl: string; affiliateTag: string }) {
@@ -171,13 +183,18 @@ export async function deleteProduct(id: string): Promise<ServiceResult<{ deleted
 }
 
 export async function recordOutboundClick(slug: string) {
-  return db(async () => {
-    const product = await Product.findOneAndUpdate(
-      { slug, active: true },
-      { $inc: { clickCount: 1 } },
-      { new: true },
-    );
-    if (!product) return null;
-    return withAssociateTag(product.affiliateUrl, product.affiliateTag);
-  });
+  try {
+    return await db(async () => {
+      const product = await Product.findOneAndUpdate(
+        { slug, active: true },
+        { $inc: { clickCount: 1 } },
+        { new: true },
+      );
+      if (!product) return null;
+      return withAssociateTag(product.affiliateUrl, product.affiliateTag);
+    });
+  } catch (error) {
+    if (error instanceof DatabaseUnavailableError) return fallbackAffiliateUrl(slug);
+    throw error;
+  }
 }
